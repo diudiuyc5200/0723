@@ -18,6 +18,7 @@
 #include <trace/events/power.h>
 #include <linux/sched/sysctl.h>
 #include "sched.h"
+#include <linux/kernel.h>
 
 #define SUGOV_KTHREAD_PRIORITY	50
 
@@ -287,8 +288,12 @@ static unsigned int get_next_freq(struct sugov_policy *sg_policy,
 	struct cpufreq_policy *policy = sg_policy->policy;
 	unsigned int freq = arch_scale_freq_invariant() ?
 				policy->cpuinfo.max_freq : policy->cur;
+	unsigned long sqrt_util;
 
-	freq = (freq + (freq >> 2)) * util / max;
+	/* 使用平方根算法放大轻负载利用率 */
+	sqrt_util = int_sqrt(util * max);  /* 开方后再放大到 max 量级 */
+	freq = (freq + (freq >> 2)) * sqrt_util / max;
+
 	trace_sugov_next_freq(policy->cpu, util, max, freq);
 
 	if (freq == sg_policy->cached_raw_freq && sg_policy->next_freq != UINT_MAX)
@@ -325,17 +330,17 @@ static void sugov_set_iowait_boost(struct sugov_cpu *sg_cpu, u64 time,
 		sg_cpu->iowait_boost_pending = true;
 
 		if (sg_cpu->iowait_boost) {
-			sg_cpu->iowait_boost <<= 1;
+			sg_cpu->iowait_boost <<= 2;
 			if (sg_cpu->iowait_boost > sg_cpu->iowait_boost_max)
 				sg_cpu->iowait_boost = sg_cpu->iowait_boost_max;
 		} else {
-			sg_cpu->iowait_boost = sg_cpu->sg_policy->policy->min;
+			sg_cpu->iowait_boost = sg_cpu->iowait_boost_max;
 		}
 	} else if (sg_cpu->iowait_boost) {
 		s64 delta_ns = time - sg_cpu->last_update;
 
 		/* Clear iowait_boost if the CPU apprears to have been idle. */
-		if (delta_ns > TICK_NSEC) {
+		if (delta_ns > TICK_NSEC * 10) {
 			sg_cpu->iowait_boost = 0;
 			sg_cpu->iowait_boost_pending = false;
 		}
@@ -353,7 +358,7 @@ static void sugov_iowait_boost(struct sugov_cpu *sg_cpu, unsigned long *util,
 	if (sg_cpu->iowait_boost_pending) {
 		sg_cpu->iowait_boost_pending = false;
 	} else {
-		sg_cpu->iowait_boost >>= 1;
+		sg_cpu->iowait_boost -= sg_cpu->iowait_boost / 10;
 		if (sg_cpu->iowait_boost < sg_cpu->sg_policy->policy->min) {
 			sg_cpu->iowait_boost = 0;
 			return;
@@ -383,7 +388,7 @@ static inline bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu) { return false; }
 #endif /* CONFIG_NO_HZ_COMMON */
 
 #define NL_RATIO 75
-#define DEFAULT_HISPEED_LOAD 90
+#define DEFAULT_HISPEED_LOAD 75
 static void sugov_walt_adjust(struct sugov_cpu *sg_cpu, unsigned long *util,
 			      unsigned long *max)
 {
@@ -971,12 +976,15 @@ static int sugov_init(struct cpufreq_policy *policy)
 		goto stop_kthread;
 	}
 
-	tunables->up_rate_limit_us =
-				cpufreq_policy_transition_delay_us(policy);
-	tunables->down_rate_limit_us =
-				cpufreq_policy_transition_delay_us(policy);
+		if (policy->cpu >= 4) {
+		tunables->up_rate_limit_us = 500;
+		tunables->down_rate_limit_us = 6000;  /* 60ms，降频慢 */
+	} else {
+		tunables->up_rate_limit_us = 500;
+		tunables->down_rate_limit_us = 5000;   /* 5ms，降频快 */
+	}
 	tunables->hispeed_load = DEFAULT_HISPEED_LOAD;
-	tunables->hispeed_freq = 0;
+	tunables->hispeed_freq = 2016000;
 
 	policy->governor_data = sg_policy;
 	sg_policy->tunables = tunables;
