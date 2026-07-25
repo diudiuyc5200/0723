@@ -743,7 +743,7 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
         }
     } else {
         // 放电：库仑计70%权重 + 电压查表30%权重，柔和兜底，不再高压强制拉高SOC
-        final_soc = DIV_ROUND_CLOSEST(soc_coulomb * 20 + soc_volt * 85, 100);
+        final_soc = DIV_ROUND_CLOSEST(soc_coulomb * 10 + soc_volt * 90, 100);
 // 新增调试打印，每20次输出一次
      if (++soc_fix_log_cnt % 20 == 0) {
          bq_dbg(PR_OEM, "DISCHARGE MODE, coulomb_soc:%d volt_soc:%d final_soc:%d volt:%dmV",
